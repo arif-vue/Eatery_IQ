@@ -26,4 +26,16 @@ urlpatterns = [
     path('onboarding/update/', views.onboarding_update),
     
     path('google-login/', views.GoogleLoginView.as_view()),
+    
+    # Document Management endpoints
+    path('documents/', views.document_management),
+    path('documents/<int:document_id>/', views.document_detail),
+    
+    # Subscription endpoints
+    path('subscription/', views.subscription_management),
+    path('subscription/cancel/', views.subscription_cancel),
+    
+    # Calendar endpoints
+    path('calendar/events/', views.calendar_events),
+    path('calendar/events/<int:event_id>/', views.calendar_event_detail),
 ]

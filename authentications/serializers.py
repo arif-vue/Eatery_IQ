@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from .models import CustomUser, OTP, UserProfile, OnboardingProgress
+from .models import (
+    CustomUser, OTP, UserProfile, OnboardingProgress,
+    UserDocument, Subscription, CalendarEvent
+)
 from django.contrib.auth import get_user_model, authenticate
 
 User = get_user_model()
@@ -404,3 +407,217 @@ class OnboardingProgressSerializer(serializers.ModelSerializer):
             validated_data['is_completed'] = True
         
         return super().update(instance, validated_data)
+
+
+class UserDocumentSerializer(serializers.ModelSerializer):
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+    file_url = serializers.SerializerMethodField()
+    file_size_mb = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = UserDocument
+        fields = [
+            'id', 'user_email', 'file_name', 'document_type', 
+            'file_format', 'file', 'file_url', 'file_size', 
+            'file_size_mb', 'upload_date', 'updated_at'
+        ]
+        read_only_fields = ['id', 'user_email', 'file_size', 'upload_date', 'updated_at', 'file_url', 'file_size_mb']
+    
+    def get_file_url(self, obj):
+        """Return full URL for file"""
+        if obj.file:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.file.url)
+            return obj.file.url
+        return None
+    
+    def get_file_size_mb(self, obj):
+        """Return file size in MB"""
+        if obj.file_size:
+            return round(obj.file_size / (1024 * 1024), 2)
+        return 0
+    
+    def validate_file(self, value):
+        """Validate file size and format"""
+        if value:
+            # Check file size (50MB limit)
+            if value.size > 50 * 1024 * 1024:
+                raise serializers.ValidationError("File size cannot exceed 50MB")
+            
+            # Check file format based on extension
+            file_extension = value.name.split('.')[-1].lower()
+            allowed_extensions = {
+                'excel': ['xls', 'xlsx', 'csv'],
+                'pdf': ['pdf'],
+                'docs': ['doc', 'docx', 'txt']
+            }
+            
+            file_format = self.initial_data.get('file_format', '').lower()
+            if file_format in allowed_extensions:
+                if file_extension not in allowed_extensions[file_format]:
+                    raise serializers.ValidationError(
+                        f"Invalid file format. Expected {', '.join(allowed_extensions[file_format])} for {file_format}"
+                    )
+        
+        return value
+    
+    def validate(self, data):
+        """Additional validation for document data"""
+        errors = {}
+        
+        if not data.get('file_name'):
+            errors['file_name'] = ['File name is required']
+        
+        if not data.get('document_type'):
+            errors['document_type'] = ['Document type is required']
+        
+        if not data.get('file_format'):
+            errors['file_format'] = ['File format is required']
+        
+        if not data.get('file'):
+            errors['file'] = ['File is required']
+        
+        if errors:
+            raise serializers.ValidationError(errors)
+        
+        return data
+    
+    def create(self, validated_data):
+        """Create document for the authenticated user"""
+        user = self.context['request'].user
+        validated_data['user'] = user
+        return super().create(validated_data)
+
+
+class SubscriptionSerializer(serializers.ModelSerializer):
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+    is_currently_active = serializers.SerializerMethodField()
+    days_remaining = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Subscription
+        fields = [
+            'id', 'user_email', 'plan', 'price', 'status',
+            'start_date', 'end_date', 'is_trial', 'auto_renew',
+            'is_currently_active', 'days_remaining'
+        ]
+        read_only_fields = ['id', 'user_email', 'start_date', 'is_currently_active', 'days_remaining']
+    
+    def get_is_currently_active(self, obj):
+        """Check if subscription is currently active"""
+        return obj.is_active()
+    
+    def get_days_remaining(self, obj):
+        """Calculate days remaining in subscription"""
+        from django.utils import timezone
+        if obj.status == 'active' and obj.end_date > timezone.now():
+            delta = obj.end_date - timezone.now()
+            return delta.days
+        return 0
+    
+    def validate_plan(self, value):
+        """Validate subscription plan"""
+        valid_plans = ['starter', 'professional', 'enterprise']
+        if value not in valid_plans:
+            raise serializers.ValidationError(
+                f"Invalid plan. Choose from: {', '.join(valid_plans)}"
+            )
+        return value
+    
+    def validate(self, data):
+        """Additional validation for subscription data"""
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        errors = {}
+        
+        # Set price and duration based on plan
+        plan = data.get('plan')
+        if plan:
+            plan_details = {
+                'starter': {'price': 0.00, 'days': 10, 'is_trial': True},
+                'professional': {'price': 29.00, 'days': 30, 'is_trial': False},
+                'enterprise': {'price': 69.00, 'days': 180, 'is_trial': False},
+            }
+            
+            if plan in plan_details:
+                details = plan_details[plan]
+                data['price'] = details['price']
+                data['is_trial'] = details['is_trial']
+                
+                # Set end_date if not provided
+                if 'end_date' not in data:
+                    data['end_date'] = timezone.now() + timedelta(days=details['days'])
+        
+        # Validate end_date
+        if 'end_date' in data:
+            if data['end_date'] <= timezone.now():
+                errors['end_date'] = ['End date must be in the future']
+        
+        if errors:
+            raise serializers.ValidationError(errors)
+        
+        return data
+    
+    def create(self, validated_data):
+        """Create subscription for the authenticated user"""
+        user = self.context['request'].user
+        validated_data['user'] = user
+        validated_data['status'] = 'active'
+        return super().create(validated_data)
+
+
+class CalendarEventSerializer(serializers.ModelSerializer):
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+    duration_minutes = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CalendarEvent
+        fields = [
+            'id', 'user_email', 'title', 'description', 'event_type',
+            'start_date', 'end_date', 'location', 'is_all_day',
+            'reminder_minutes', 'duration_minutes', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'user_email', 'created_at', 'updated_at', 'duration_minutes']
+    
+    def get_duration_minutes(self, obj):
+        """Calculate event duration in minutes"""
+        if obj.start_date and obj.end_date:
+            delta = obj.end_date - obj.start_date
+            return int(delta.total_seconds() / 60)
+        return 0
+    
+    def validate(self, data):
+        """Additional validation for calendar event data"""
+        errors = {}
+        
+        if not data.get('title'):
+            errors['title'] = ['Title is required']
+        
+        if not data.get('start_date'):
+            errors['start_date'] = ['Start date is required']
+        
+        if not data.get('end_date'):
+            errors['end_date'] = ['End date is required']
+        
+        # Validate that end_date is after start_date
+        if data.get('start_date') and data.get('end_date'):
+            if data['end_date'] <= data['start_date']:
+                errors['end_date'] = ['End date must be after start date']
+        
+        # Validate reminder_minutes
+        if 'reminder_minutes' in data:
+            if data['reminder_minutes'] < 0:
+                errors['reminder_minutes'] = ['Reminder minutes cannot be negative']
+        
+        if errors:
+            raise serializers.ValidationError(errors)
+        
+        return data
+    
+    def create(self, validated_data):
+        """Create calendar event for the authenticated user"""
+        user = self.context['request'].user
+        validated_data['user'] = user
+        return super().create(validated_data)

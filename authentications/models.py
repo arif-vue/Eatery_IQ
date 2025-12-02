@@ -222,3 +222,146 @@ def delete_onboarding_files(sender, instance, **kwargs):
     if instance.document_file:
         if os.path.isfile(instance.document_file.path):
             os.remove(instance.document_file.path)
+
+
+class UserDocument(models.Model):
+    """
+    Document management for all users
+    Users can upload documents with metadata
+    """
+    DOCUMENT_TYPES = (
+        ('all', 'All'),
+        ('operations', 'Operations'),
+        ('compliance', 'Compliance'),
+        ('finance', 'Finance'),
+        ('legal', 'Legal'),
+        ('hr_staff', 'HR/Staff'),
+    )
+    
+    FILE_FORMATS = (
+        ('excel', 'Excel'),
+        ('pdf', 'PDF'),
+        ('docs', 'Docs'),
+    )
+    
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='documents'
+    )
+    file_name = models.CharField(max_length=255)
+    document_type = models.CharField(max_length=20, choices=DOCUMENT_TYPES)
+    file_format = models.CharField(max_length=10, choices=FILE_FORMATS)
+    file = models.FileField(
+        upload_to="user_documents/%Y/%m/",
+        help_text="Upload your document"
+    )
+    file_size = models.BigIntegerField(help_text="File size in bytes")
+    upload_date = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "User Document"
+        verbose_name_plural = "User Documents"
+        ordering = ['-upload_date']
+    
+    def __str__(self):
+        return f"{self.file_name} - {self.user.email}"
+    
+    def save(self, *args, **kwargs):
+        if self.file:
+            self.file_size = self.file.size
+        super().save(*args, **kwargs)
+
+
+class Subscription(models.Model):
+    """
+    Subscription plans for users
+    Three tiers: Starter, Professional, Enterprise
+    """
+    PLAN_CHOICES = (
+        ('starter', 'Starter'),
+        ('professional', 'Professional'),
+        ('enterprise', 'Enterprise'),
+    )
+    
+    STATUS_CHOICES = (
+        ('active', 'Active'),
+        ('expired', 'Expired'),
+        ('cancelled', 'Cancelled'),
+    )
+    
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='subscription'
+    )
+    plan = models.CharField(max_length=20, choices=PLAN_CHOICES, default='starter')
+    price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+    start_date = models.DateTimeField(auto_now_add=True)
+    end_date = models.DateTimeField()
+    is_trial = models.BooleanField(default=False)
+    auto_renew = models.BooleanField(default=False)
+    
+    class Meta:
+        verbose_name = "Subscription"
+        verbose_name_plural = "Subscriptions"
+        ordering = ['-start_date']
+    
+    def __str__(self):
+        return f"{self.user.email} - {self.plan} ({self.status})"
+    
+    def is_active(self):
+        from django.utils import timezone
+        return self.status == 'active' and self.end_date > timezone.now()
+
+
+class CalendarEvent(models.Model):
+    """
+    Calendar events for all users
+    Users can create, view, and manage events
+    """
+    EVENT_TYPES = (
+        ('meeting', 'Meeting'),
+        ('reminder', 'Reminder'),
+        ('task', 'Task'),
+        ('appointment', 'Appointment'),
+        ('other', 'Other'),
+    )
+    
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='calendar_events'
+    )
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True, null=True)
+    event_type = models.CharField(max_length=20, choices=EVENT_TYPES, default='other')
+    start_date = models.DateTimeField()
+    end_date = models.DateTimeField()
+    location = models.CharField(max_length=200, blank=True, null=True)
+    is_all_day = models.BooleanField(default=False)
+    reminder_minutes = models.IntegerField(
+        default=15,
+        help_text="Reminder time in minutes before event"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "Calendar Event"
+        verbose_name_plural = "Calendar Events"
+        ordering = ['start_date']
+    
+    def __str__(self):
+        return f"{self.title} - {self.user.email} - {self.start_date}"
+
+
+# Signal to clean up document file when UserDocument is deleted
+@receiver(post_delete, sender=UserDocument)
+def delete_user_document(sender, instance, **kwargs):
+    """Delete document file when UserDocument is deleted"""
+    if instance.file:
+        if os.path.isfile(instance.file.path):
+            os.remove(instance.file.path)

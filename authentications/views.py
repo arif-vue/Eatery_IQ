@@ -13,7 +13,10 @@ from .serializers import (
     OTPSerializer,
     LoginSerializer,
     PasswordResetSerializer,
-    OnboardingProgressSerializer
+    OnboardingProgressSerializer,
+    UserDocumentSerializer,
+    SubscriptionSerializer,
+    CalendarEventSerializer
 )
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.mail import EmailMultiAlternatives
@@ -854,3 +857,352 @@ class GoogleLoginView(APIView):
                 message="Google authentication failed",
                 details={"error": [str(e)]}
             )
+
+
+# ==================== DOCUMENT MANAGEMENT APIs ====================
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def document_management(request):
+    """
+    GET: List all documents for the authenticated user (with optional search)
+    POST: Upload a new document
+    """
+    user = request.user
+    
+    if request.method == 'GET':
+        # Get query parameter for search
+        search_query = request.GET.get('search', '').strip()
+        
+        # Get all documents for the user
+        documents = user.documents.all()
+        
+        # Apply search filter if provided
+        if search_query:
+            documents = documents.filter(file_name__icontains=search_query)
+        
+        # Serialize the documents
+        from .serializers import UserDocumentSerializer
+        serializer = UserDocumentSerializer(documents, many=True, context={'request': request})
+        
+        return Response({
+            "error": False,
+            "message": "Documents retrieved successfully",
+            "count": documents.count(),
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
+    
+    elif request.method == 'POST':
+        from .serializers import UserDocumentSerializer
+        
+        # Create new document
+        serializer = UserDocumentSerializer(data=request.data, context={'request': request})
+        
+        if serializer.is_valid():
+            document = serializer.save()
+            
+            return Response({
+                "error": False,
+                "message": "Document uploaded successfully",
+                "data": UserDocumentSerializer(document, context={'request': request}).data
+            }, status=status.HTTP_201_CREATED)
+        
+        return error_response(
+            code=400,
+            message="Invalid data provided",
+            details=serializer.errors
+        )
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def document_detail(request, document_id):
+    """
+    GET: Retrieve a specific document
+    PUT: Update document metadata (not the file itself)
+    DELETE: Delete a document
+    """
+    from .models import UserDocument
+    from .serializers import UserDocumentSerializer
+    
+    user = request.user
+    
+    try:
+        document = UserDocument.objects.get(id=document_id, user=user)
+    except UserDocument.DoesNotExist:
+        return error_response(
+            code=404,
+            message="Document not found",
+            details={"document_id": [f"No document found with ID {document_id}"]}
+        )
+    
+    if request.method == 'GET':
+        serializer = UserDocumentSerializer(document, context={'request': request})
+        return Response({
+            "error": False,
+            "message": "Document retrieved successfully",
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
+    
+    elif request.method == 'PUT':
+        # Only allow updating metadata, not the file
+        serializer = UserDocumentSerializer(
+            document,
+            data=request.data,
+            partial=True,
+            context={'request': request}
+        )
+        
+        if serializer.is_valid():
+            updated_document = serializer.save()
+            
+            return Response({
+                "error": False,
+                "message": "Document updated successfully",
+                "data": UserDocumentSerializer(updated_document, context={'request': request}).data
+            }, status=status.HTTP_200_OK)
+        
+        return error_response(
+            code=400,
+            message="Invalid data provided",
+            details=serializer.errors
+        )
+    
+    elif request.method == 'DELETE':
+        document_name = document.file_name
+        document.delete()
+        
+        return Response({
+            "error": False,
+            "message": f"Document '{document_name}' deleted successfully"
+        }, status=status.HTTP_200_OK)
+
+
+# ==================== SUBSCRIPTION APIs ====================
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def subscription_management(request):
+    """
+    GET: Retrieve current user's subscription
+    POST: Create or update subscription
+    """
+    from .models import Subscription
+    from .serializers import SubscriptionSerializer
+    
+    user = request.user
+    
+    if request.method == 'GET':
+        try:
+            subscription = Subscription.objects.get(user=user)
+            serializer = SubscriptionSerializer(subscription, context={'request': request})
+            
+            return Response({
+                "error": False,
+                "message": "Subscription retrieved successfully",
+                "data": serializer.data
+            }, status=status.HTTP_200_OK)
+        
+        except Subscription.DoesNotExist:
+            return Response({
+                "error": False,
+                "message": "No subscription found. Please create one.",
+                "data": None
+            }, status=status.HTTP_200_OK)
+    
+    elif request.method == 'POST':
+        # Check if user already has a subscription
+        existing_subscription = Subscription.objects.filter(user=user).first()
+        
+        if existing_subscription:
+            # Update existing subscription
+            serializer = SubscriptionSerializer(
+                existing_subscription,
+                data=request.data,
+                partial=True,
+                context={'request': request}
+            )
+        else:
+            # Create new subscription
+            serializer = SubscriptionSerializer(
+                data=request.data,
+                context={'request': request}
+            )
+        
+        if serializer.is_valid():
+            subscription = serializer.save()
+            
+            message = "Subscription updated successfully" if existing_subscription else "Subscription created successfully"
+            
+            return Response({
+                "error": False,
+                "message": message,
+                "data": SubscriptionSerializer(subscription, context={'request': request}).data
+            }, status=status.HTTP_200_OK if existing_subscription else status.HTTP_201_CREATED)
+        
+        return error_response(
+            code=400,
+            message="Invalid data provided",
+            details=serializer.errors
+        )
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def subscription_cancel(request):
+    """
+    Cancel user's subscription
+    """
+    from .models import Subscription
+    
+    user = request.user
+    
+    try:
+        subscription = Subscription.objects.get(user=user)
+        subscription.status = 'cancelled'
+        subscription.auto_renew = False
+        subscription.save()
+        
+        return Response({
+            "error": False,
+            "message": "Subscription cancelled successfully"
+        }, status=status.HTTP_200_OK)
+    
+    except Subscription.DoesNotExist:
+        return error_response(
+            code=404,
+            message="No active subscription found",
+            details={"subscription": ["User does not have a subscription"]}
+        )
+
+
+# ==================== CALENDAR APIs ====================
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def calendar_events(request):
+    """
+    GET: List all calendar events for the authenticated user
+    POST: Create a new calendar event
+    """
+    from .models import CalendarEvent
+    from .serializers import CalendarEventSerializer
+    
+    user = request.user
+    
+    if request.method == 'GET':
+        # Get query parameters for filtering
+        start_date = request.GET.get('start_date')
+        end_date = request.GET.get('end_date')
+        event_type = request.GET.get('event_type')
+        
+        # Get all events for the user
+        events = CalendarEvent.objects.filter(user=user)
+        
+        # Apply filters if provided
+        if start_date:
+            from django.utils.dateparse import parse_datetime
+            start_dt = parse_datetime(start_date)
+            if start_dt:
+                events = events.filter(start_date__gte=start_dt)
+        
+        if end_date:
+            from django.utils.dateparse import parse_datetime
+            end_dt = parse_datetime(end_date)
+            if end_dt:
+                events = events.filter(end_date__lte=end_dt)
+        
+        if event_type:
+            events = events.filter(event_type=event_type)
+        
+        # Serialize the events
+        serializer = CalendarEventSerializer(events, many=True, context={'request': request})
+        
+        return Response({
+            "error": False,
+            "message": "Calendar events retrieved successfully",
+            "count": events.count(),
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
+    
+    elif request.method == 'POST':
+        # Create new calendar event
+        serializer = CalendarEventSerializer(data=request.data, context={'request': request})
+        
+        if serializer.is_valid():
+            event = serializer.save()
+            
+            return Response({
+                "error": False,
+                "message": "Calendar event created successfully",
+                "data": CalendarEventSerializer(event, context={'request': request}).data
+            }, status=status.HTTP_201_CREATED)
+        
+        return error_response(
+            code=400,
+            message="Invalid data provided",
+            details=serializer.errors
+        )
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def calendar_event_detail(request, event_id):
+    """
+    GET: Retrieve a specific calendar event
+    PUT: Update a calendar event
+    DELETE: Delete a calendar event
+    """
+    from .models import CalendarEvent
+    from .serializers import CalendarEventSerializer
+    
+    user = request.user
+    
+    try:
+        event = CalendarEvent.objects.get(id=event_id, user=user)
+    except CalendarEvent.DoesNotExist:
+        return error_response(
+            code=404,
+            message="Calendar event not found",
+            details={"event_id": [f"No event found with ID {event_id}"]}
+        )
+    
+    if request.method == 'GET':
+        serializer = CalendarEventSerializer(event, context={'request': request})
+        return Response({
+            "error": False,
+            "message": "Calendar event retrieved successfully",
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
+    
+    elif request.method == 'PUT':
+        serializer = CalendarEventSerializer(
+            event,
+            data=request.data,
+            partial=True,
+            context={'request': request}
+        )
+        
+        if serializer.is_valid():
+            updated_event = serializer.save()
+            
+            return Response({
+                "error": False,
+                "message": "Calendar event updated successfully",
+                "data": CalendarEventSerializer(updated_event, context={'request': request}).data
+            }, status=status.HTTP_200_OK)
+        
+        return error_response(
+            code=400,
+            message="Invalid data provided",
+            details=serializer.errors
+        )
+    
+    elif request.method == 'DELETE':
+        event_title = event.title
+        event.delete()
+        
+        return Response({
+            "error": False,
+            "message": f"Calendar event '{event_title}' deleted successfully"
+        }, status=status.HTTP_200_OK)

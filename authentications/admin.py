@@ -1,7 +1,10 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.forms import UserCreationForm, UserChangeForm
-from .models import CustomUser, UserProfile, OTP, OnboardingProgress
+from .models import (
+    CustomUser, UserProfile, OTP, OnboardingProgress,
+    UserDocument, Subscription, CalendarEvent
+)
 
 
 class CustomUserCreationForm(UserCreationForm):
@@ -171,3 +174,100 @@ class OnboardingProgressAdmin(admin.ModelAdmin):
         return '-'
     get_user_role.short_description = 'User Role'
     get_user_role.admin_order_field = 'user__role'
+
+
+@admin.register(UserDocument)
+class UserDocumentAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'user', 'file_name', 'document_type', 'file_format',
+        'file_size_display', 'upload_date'
+    )
+    list_filter = ('document_type', 'file_format', 'upload_date', 'user__role')
+    search_fields = ('user__email', 'file_name', 'document_type')
+    readonly_fields = ('upload_date', 'updated_at', 'file_size')
+    ordering = ('-upload_date',)
+    date_hierarchy = 'upload_date'
+    
+    fieldsets = (
+        ('User Information', {
+            'fields': ('user',)
+        }),
+        ('Document Details', {
+            'fields': ('file_name', 'document_type', 'file_format', 'file')
+        }),
+        ('Metadata', {
+            'fields': ('file_size', 'upload_date', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def file_size_display(self, obj):
+        """Display file size in MB"""
+        if obj.file_size:
+            size_mb = obj.file_size / (1024 * 1024)
+            return f"{size_mb:.2f} MB"
+        return "0 MB"
+    file_size_display.short_description = 'File Size'
+
+
+@admin.register(Subscription)
+class SubscriptionAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'user', 'plan', 'price', 'status',
+        'start_date', 'end_date', 'is_trial', 'auto_renew', 'days_left'
+    )
+    list_filter = ('plan', 'status', 'is_trial', 'auto_renew', 'start_date')
+    search_fields = ('user__email', 'plan')
+    readonly_fields = ('start_date',)
+    ordering = ('-start_date',)
+    date_hierarchy = 'start_date'
+    
+    fieldsets = (
+        ('User Information', {
+            'fields': ('user',)
+        }),
+        ('Subscription Details', {
+            'fields': ('plan', 'price', 'status', 'is_trial', 'auto_renew')
+        }),
+        ('Timeline', {
+            'fields': ('start_date', 'end_date')
+        }),
+    )
+    
+    def days_left(self, obj):
+        """Display days remaining in subscription"""
+        from django.utils import timezone
+        if obj.status == 'active' and obj.end_date > timezone.now():
+            delta = obj.end_date - timezone.now()
+            return f"{delta.days} days"
+        return "Expired"
+    days_left.short_description = 'Days Left'
+
+
+@admin.register(CalendarEvent)
+class CalendarEventAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'user', 'title', 'event_type', 'start_date',
+        'end_date', 'is_all_day', 'created_at'
+    )
+    list_filter = ('event_type', 'is_all_day', 'start_date', 'user__role')
+    search_fields = ('user__email', 'title', 'description', 'location')
+    readonly_fields = ('created_at', 'updated_at')
+    ordering = ('start_date',)
+    date_hierarchy = 'start_date'
+    
+    fieldsets = (
+        ('User Information', {
+            'fields': ('user',)
+        }),
+        ('Event Details', {
+            'fields': ('title', 'description', 'event_type', 'location')
+        }),
+        ('Schedule', {
+            'fields': ('start_date', 'end_date', 'is_all_day', 'reminder_minutes')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
