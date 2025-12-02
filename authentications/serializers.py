@@ -25,7 +25,7 @@ class CustomUserCreateSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(write_only=True, required=True)
     business_name = serializers.CharField(write_only=True, required=True)
     email = serializers.EmailField(required=True)
-    role = serializers.ChoiceField(choices=['operator', 'manager', 'franchisee'], required=True)
+    role = serializers.ChoiceField(choices=['operations', 'marketing manager', 'executive'], required=True)
 
     class Meta:
         model = User
@@ -62,8 +62,8 @@ class CustomUserCreateSerializer(serializers.ModelSerializer):
             errors['email'] = ['A user with this email already exists']
         
         # Role validation - block 'admin' role during registration
-        if data.get('role') and data.get('role') not in ['operator', 'manager', 'franchisee']:
-            errors['role'] = ['Only operator, manager, and franchisee roles are allowed during registration']
+        if data.get('role') and data.get('role') not in ['operations', 'marketing manager', 'executive']:
+            errors['role'] = ['Only operations, marketing manager, and executive roles are allowed during registration']
         
         if errors:
             raise serializers.ValidationError(errors)
@@ -74,7 +74,7 @@ class CustomUserCreateSerializer(serializers.ModelSerializer):
         business_name = validated_data.pop('business_name')
         validated_data.pop('confirm_password')  # Remove confirm_password as it's not needed
         
-        received_role = validated_data.get('role', 'operator')
+        received_role = validated_data.get('role', 'operations')
         
         # Delete any unverified users with same email
         User.objects.filter(email=validated_data['email'], is_verified=False).delete()

@@ -790,7 +790,7 @@ class GoogleLoginView(APIView):
                 email=email,
                 defaults={
                     'is_verified': True,  # Google accounts are pre-verified
-                    'role': 'restaurant_owner',  # Default role, can be updated later
+                    'role': 'operations',  # Default role, can be updated later
                 }
             )
             

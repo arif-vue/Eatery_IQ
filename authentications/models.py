@@ -32,13 +32,13 @@ class CustomUserManager(BaseUserManager):
 
 class CustomUser(AbstractBaseUser, PermissionsMixin):
     ROLES = (
-        ('operator', 'Operator'),
-        ('manager', 'Manager'),
-        ('franchisee', 'Franchisee'),
+        ('operations', 'Operations'),
+        ('marketing manager', 'Marketing Manager'),
+        ('executive', 'Executive'),
         ('admin', 'Admin'),
     )
     email = models.EmailField(_('email address'), unique=True)
-    role = models.CharField(max_length=15, choices=ROLES, default='operator')
+    role = models.CharField(max_length=20, choices=ROLES, default='operations')
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_verified = models.BooleanField(default=False)

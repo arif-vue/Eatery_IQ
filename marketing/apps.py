@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 
 
-class FranchiseesConfig(AppConfig):
+class MarketingConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
-    name = 'franchisees'
+    name = 'marketing'
