@@ -19,7 +19,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
         try:
             profile = obj.user_profile
             return UserProfileSerializer(profile).data
-        except UserProfile.DoesNotExist:
+        except UserProfile.DoesNotExist:        
             return None
 
 class CustomUserCreateSerializer(serializers.ModelSerializer):
