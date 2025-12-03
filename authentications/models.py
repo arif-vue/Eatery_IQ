@@ -304,6 +304,11 @@ class Subscription(models.Model):
     is_trial = models.BooleanField(default=False)
     auto_renew = models.BooleanField(default=False)
     
+    # Stripe integration fields
+    stripe_price_id = models.CharField(max_length=255, blank=True, null=True, help_text="Stripe Price ID")
+    stripe_session_id = models.CharField(max_length=255, blank=True, null=True, help_text="Stripe Checkout Session ID")
+    stripe_payment_intent = models.CharField(max_length=255, blank=True, null=True, help_text="Stripe Payment Intent ID")
+    
     class Meta:
         verbose_name = "Subscription"
         verbose_name_plural = "Subscriptions"

@@ -27,6 +27,11 @@ import random
 from rest_framework.views import APIView
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+import stripe
+from django.conf import settings
+
+# Set Stripe API key
+stripe.api_key = settings.STRIPE_SECRET_KEY
 
 def error_response(code, message="Error", details=None):
     return Response({
@@ -994,20 +999,22 @@ def subscription_management(request):
     
     if request.method == 'GET':
         try:
-            subscription = Subscription.objects.get(user=user)
-            serializer = SubscriptionSerializer(subscription, context={'request': request})
+            subscriptions = Subscription.objects.filter(user=user)
+            serializer = SubscriptionSerializer(subscriptions, many=True, context={'request': request})
             
             return Response({
                 "error": False,
-                "message": "Subscription retrieved successfully",
-                "data": serializer.data
+                "message": "Subscriptions retrieved successfully",
+                "data": serializer.data,
+                "count": subscriptions.count()
             }, status=status.HTTP_200_OK)
         
-        except Subscription.DoesNotExist:
+        except Exception as e:
             return Response({
                 "error": False,
                 "message": "No subscription found. Please create one.",
-                "data": None
+                "data": [],
+                "count": 0
             }, status=status.HTTP_200_OK)
     
     elif request.method == 'POST':
@@ -1073,6 +1080,337 @@ def subscription_cancel(request):
             code=404,
             message="No active subscription found",
             details={"subscription": ["User does not have a subscription"]}
+        )
+
+
+# ==================== STRIPE PAYMENT APIs ====================
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_stripe_products(request):
+    """
+    Admin endpoint to create Stripe products and prices for subscriptions
+    This should be run once to set up the products in Stripe
+    """
+    try:
+        products_created = []
+        
+        # Define subscription plans
+        plans = {
+            'starter': {
+                'name': 'Starter Plan',
+                'description': 'Free trial for 10 days - Perfect for getting started',
+                'price': 0,
+                'currency': 'usd',
+            },
+            'professional': {
+                'name': 'Professional Plan',
+                'description': 'Premium features for 1 month at $29',
+                'price': 2900,  # $29.00 in cents
+                'currency': 'usd',
+            },
+            'enterprise': {
+                'name': 'Enterprise Plan',
+                'description': 'Full access for 6 months at $69',
+                'price': 6900,  # $69.00 in cents
+                'currency': 'usd',
+            }
+        }
+        
+        for plan_key, plan_data in plans.items():
+            # Create product
+            product = stripe.Product.create(
+                name=plan_data['name'],
+                description=plan_data['description'],
+            )
+            
+            # Create price
+            price = stripe.Price.create(
+                product=product.id,
+                unit_amount=plan_data['price'],
+                currency=plan_data['currency'],
+            )
+            
+            products_created.append({
+                'plan': plan_key,
+                'product_id': product.id,
+                'price_id': price.id,
+                'amount': plan_data['price'] / 100,
+                'currency': plan_data['currency']
+            })
+        
+        return Response({
+            "error": False,
+            "message": "Stripe products created successfully",
+            "data": products_created,
+            "price_ids": {
+                'starter': products_created[0]['price_id'],
+                'professional': products_created[1]['price_id'],
+                'enterprise': products_created[2]['price_id']
+            }
+        }, status=status.HTTP_200_OK)
+    
+    except stripe.error.StripeError as e:
+        return error_response(
+            code=400,
+            message="Stripe error occurred",
+            details={"error": [str(e)]}
+        )
+    except Exception as e:
+        return error_response(
+            code=500,
+            message="Failed to create products",
+            details={"error": [str(e)]}
+        )
+
+
+def get_stripe_price_ids():
+    """
+    Get Stripe price IDs from Stripe products dynamically
+    Returns dict with plan names as keys and price IDs as values
+    """
+    try:
+        products = stripe.Product.list(limit=100)
+        price_ids = {}
+        
+        for product in products.data:
+            product_name_lower = product.name.lower()
+            
+            # Get the price for this product
+            prices = stripe.Price.list(product=product.id, limit=1)
+            if prices.data:
+                price_id = prices.data[0].id
+                
+                if 'starter' in product_name_lower:
+                    price_ids['starter'] = price_id
+                elif 'professional' in product_name_lower:
+                    price_ids['professional'] = price_id
+                elif 'enterprise' in product_name_lower:
+                    price_ids['enterprise'] = price_id
+        
+        return price_ids
+    except Exception as e:
+        return {}
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_checkout_session(request):
+    """
+    Create Stripe checkout session for subscription payment
+    Required: plan ('starter', 'professional', or 'enterprise')
+    """
+    from .models import Subscription
+    from django.utils import timezone
+    from datetime import timedelta
+    
+    user = request.user
+    plan = request.data.get('plan')
+    
+    if not plan or plan not in ['starter', 'professional', 'enterprise']:
+        return error_response(
+            code=400,
+            message="Invalid plan",
+            details={"plan": ["Please provide a valid plan: starter, professional, or enterprise"]}
+        )
+    
+    # Get price IDs from Stripe dynamically
+    stripe_price_ids = get_stripe_price_ids()
+    
+    # Define plan details
+    plan_details = {
+        'starter': {
+            'price_id': stripe_price_ids.get('starter', ''),
+            'price': 0,
+            'days': 10,
+            'is_trial': True,
+            'name': 'Starter Plan'
+        },
+        'professional': {
+            'price_id': stripe_price_ids.get('professional', ''),
+            'price': 29.00,
+            'days': 30,
+            'is_trial': False,
+            'name': 'Professional Plan'
+        },
+        'enterprise': {
+            'price_id': stripe_price_ids.get('enterprise', ''),
+            'price': 69.00,
+            'days': 180,
+            'is_trial': False,
+            'name': 'Enterprise Plan'
+        },
+    }
+    
+    current_plan = plan_details[plan]
+    
+    # For free starter plan, create subscription directly
+    if plan == 'starter':
+        try:
+            # Check if user already has a subscription
+            existing_subscription = Subscription.objects.filter(user=user).first()
+            
+            if existing_subscription:
+                existing_subscription.plan = plan
+                existing_subscription.price = current_plan['price']
+                existing_subscription.status = 'active'
+                existing_subscription.end_date = timezone.now() + timedelta(days=current_plan['days'])
+                existing_subscription.is_trial = current_plan['is_trial']
+                existing_subscription.save()
+                subscription = existing_subscription
+            else:
+                subscription = Subscription.objects.create(
+                    user=user,
+                    plan=plan,
+                    price=current_plan['price'],
+                    status='active',
+                    end_date=timezone.now() + timedelta(days=current_plan['days']),
+                    is_trial=current_plan['is_trial'],
+                )
+            
+            from .serializers import SubscriptionSerializer
+            return Response({
+                "error": False,
+                "message": "Starter subscription activated successfully (Free Trial)",
+                "data": SubscriptionSerializer(subscription, context={'request': request}).data
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            return error_response(
+                code=500,
+                message="Failed to create subscription",
+                details={"error": [str(e)]}
+            )
+    
+    # For paid plans, create Stripe checkout session
+    try:
+        # Check if price ID is configured
+        if not current_plan['price_id']:
+            return error_response(
+                code=500,
+                message="Stripe price not configured",
+                details={"error": ["Please run /api/auth/subscription/stripe/setup/ first to create products"]}
+            )
+        
+        # Get or create subscription record
+        existing_subscription = Subscription.objects.filter(user=user).first()
+        if not existing_subscription:
+            # Create pending subscription
+            subscription = Subscription.objects.create(
+                user=user,
+                plan=plan,
+                price=current_plan['price'],
+                status='expired',  # Will be updated by webhook
+                end_date=timezone.now() + timedelta(days=current_plan['days']),
+                is_trial=current_plan['is_trial'],
+                stripe_price_id=current_plan['price_id']
+            )
+        else:
+            subscription = existing_subscription
+            subscription.plan = plan
+            subscription.price = current_plan['price']
+            subscription.end_date = timezone.now() + timedelta(days=current_plan['days'])
+            subscription.is_trial = current_plan['is_trial']
+            subscription.stripe_price_id = current_plan['price_id']
+            subscription.save()
+        
+        # Create Stripe checkout session
+        YOUR_DOMAIN = request.build_absolute_uri('/')[:-1]  # Remove trailing slash
+        
+        checkout_session = stripe.checkout.Session.create(
+            line_items=[
+                {
+                    'price': current_plan['price_id'],
+                    'quantity': 1,
+                },
+            ],
+            mode='payment',
+            success_url=YOUR_DOMAIN + '/api/auth/subscription/payment/success/',
+            cancel_url=YOUR_DOMAIN + '/api/auth/subscription/payment/cancel/',
+            client_reference_id=str(user.id),
+            metadata={
+                'plan': plan,
+                'user_id': str(user.id),
+            }
+        )
+        
+        # Save session ID
+        subscription.stripe_session_id = checkout_session.id
+        subscription.save()
+        
+        return Response({
+            "error": False,
+            "message": "Checkout session created successfully",
+            "data": {
+                'checkout_url': checkout_session.url,
+                'session_id': checkout_session.id,
+                'plan': current_plan['name'],
+                'price': current_plan['price']
+            }
+        }, status=status.HTTP_200_OK)
+    
+    except stripe.error.StripeError as e:
+        return error_response(
+            code=400,
+            message="Stripe error occurred",
+            details={"error": [str(e)]}
+        )
+    except Exception as e:
+        return error_response(
+            code=500,
+            message="Failed to create checkout session",
+            details={"error": [str(e)]}
+        )
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def payment_success(request):
+    """
+    Payment success redirect endpoint
+    """
+    from django.shortcuts import redirect
+    # You can change this URL to your frontend success page
+    return redirect('http://localhost:3000/subscription/success')
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def payment_cancel(request):
+    """
+    Payment cancellation redirect endpoint
+    """
+    from django.shortcuts import redirect
+    # You can change this URL to your frontend cancel page
+    return redirect('http://localhost:3000/subscription/cancel')
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def subscription_detail(request, subscription_id):
+    """
+    Get details of a specific subscription by ID
+    """
+    from .models import Subscription
+    from .serializers import SubscriptionSerializer
+    
+    user = request.user
+    
+    try:
+        subscription = Subscription.objects.get(id=subscription_id, user=user)
+        serializer = SubscriptionSerializer(subscription, context={'request': request})
+        
+        return Response({
+            "error": False,
+            "message": "Subscription details retrieved successfully",
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
+        
+    except Subscription.DoesNotExist:
+        return error_response(
+            code=404,
+            message="Subscription not found",
+            details={"subscription_id": [f"No subscription found with ID {subscription_id}"]}
         )
 
 
