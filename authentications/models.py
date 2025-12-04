@@ -73,7 +73,7 @@ class OTP(models.Model):
 
     def is_expired(self):
         from django.utils import timezone
-        return (timezone.now() - self.created_at).seconds > 120
+        return (timezone.now() - self.created_at).seconds > 600
 
 class UserProfile(models.Model):
     user = models.OneToOneField(
